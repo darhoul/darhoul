@@ -1,0 +1,82 @@
+name: FullStack CI/CD with Database
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  NODE_ENV: production
+  DATABASE_URL: ${{ secrets.PROD_DB_URL }}  # سيتم استبدالها باختبار DB عند التشغيل على PR
+
+jobs:
+  setup-db:
+    name: "Setup & Test Database"
+    runs-on: ubuntu-latest
+    services:
+      # تشغيل PostgreSQL كحاوية Docker (يمكن استبدالها بـ MySQL أو MongoDB)
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: npm install  # أو pip install -r requirements.txt لـ Python
+
+      - name: Run Database Migrations
+        run: npx prisma migrate dev  # أو أي أداة migrations تستخدمها
+        env:
+          DATABASE_URL: "postgresql://testuser:testpass@localhost:5432/testdb"
+
+      - name: Run Database Tests
+        run: npm run test:db  # أو pytest للبايثون
+        env:
+          DATABASE_URL: "postgresql://testuser:testpass@localhost:5432/testdb"
+
+  deploy:
+    name: "Deploy App & Database"
+    needs: setup-db  # يعتمد على نجاح job قاعدة البيانات
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'  # ينشر فقط عند push إلى main
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build App
+        run: npm run build
+
+      - name: Deploy to AWS (مثال)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: us-east-1
+        run: |
+          aws s3 sync ./dist s3://your-bucket-name
+          aws lambda update-function-code --function-name your-lambda --zip-file fileb://dist/lambda.zip
+
+      - name: Setup Production Database
+        run: npx prisma migrate deploy  # تطبيق migrations على قاعدة البيانات الحقيقية
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DB_URL }}
+
+      - name: Notify Team
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_MESSAGE: "🚀 تم نشر التطبيق وقاعدة البيانات بنجاح!"
